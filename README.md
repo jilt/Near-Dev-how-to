@@ -1,5 +1,5 @@
 # How to build a Play To Earn game on Near
-## In depth review of the current prototype - BerryClub
+#### In depth review of the current prototype - BerryClub
 ### This article was written to apply for the Near-Dev partner challenge of the Near Metabuidl Hackathon all info [here](https://airtable.com/shrdNEynK25TGJ91h/tblTtriXzrEiCfpoy)
 
 This guide is meant to let you understand the basic dynamics that will enable you to create a play to earn game on Near Protocol.
@@ -12,6 +12,8 @@ If you apply the very same logic to your ideas of game you may get even funnier 
 To follow the technical side of this tutorial we highly recommend checking the figment Near Pathway to [build a transaction](https://learn.figment.io/tutorials/transfer-near-tokens) and [build your first smart contract on Near](https://learn.figment.io/tutorials/deploy-near-contract), the concepts present in that guides are not included in this tutorial.
 It will be far easier fo you to follow this tutorial if you keep a tab open on the linked source file while reading the explanation, because much of the mentioned code is referenced with line numbers but not reproduced here.
 The BerryClub original repo was forked for this tutorial in order to keep this effort valid as far as the code still works on the blockchain; as you will see in the next section the game itself has evolved thourgh time and will be evolving again, we wanted to make a point of it's state right now.
+
+# The Berryclub frontend
 
 Berryclub is built with React, so the very first thing we’ll step into in the [app.js file](https://github.com/jilt/Near-Dev-how-to/blob/master/frontend/src/App.js) located into the src folder of the github repo, this will save us time in analysing the contract letting us focus on what we need to extrapolate the logic outside of the actual game (which is fun and played by a big community btw).
 
@@ -388,3 +390,213 @@ Now guys we get to the core, so be ready to start diving on the Smart contract.
 We know how to draw the pixel in the interface, but we need to attach the transactions to them in order for our interface to be a real *play to earn*.
 So please pay careful attention to what I’m about to say, because even if your game looks completely different from this in terms of UI the earn mechanics may very well be suitable for any other kind of game and will be explained here in the simplest way that I can.
 
+# The Berryclub Smart Contract
+
+## Lines
+
+We've met lines for the first time at the start of this article, while considering the states' definitions of the UI.
+Lines are an important concept of the berryclub interface, they are the rows by which the board/canvas is subdivided and each pixel in them is a piece of metadata.
+They are a part of the UI that interacts with the smart contract and they’re the most reusable object of the game (for example to create levels in a more articulated game), so we’ll spend a little time in analysing how they are used to store data from teh board and evaluated while the users play the game.
+
+First of all into the [board.rs file](https://github.com/jilt/Near-Dev-how-to/blob/master/contract-rs/pixel-board/src/board.rs) we find a definition of `PixelLine` right after the definition of Pixel:
+```
+pub struct PixelLine(pub Vec<Pixel>);
+
+impl Default for PixelLine {
+    fn default() -> Self {
+        Self(vec![Pixel::default(); BOARD_WIDTH as usize])
+    }
+}
+```
+A Vector (array) of string data subdivided by the  width of the board.
+
+And then we define in the `PixelBoard` as a vector of the PixelLines this way:
+```
+pub struct PixelBoard {
+    pub lines: Vector<PixelLine>,
+    pub line_versions: Vec<u32>,
+}
+```
+So each line is stored in the board as a single record with a metadata field called `line_versions` incrementing each time you modify a line.
+So each time our interface fetch the board you get 50 lines but also a metadata for every line that represents how many times the line was updated, and fetching this metadata the interface knows what's the number of times the line was changed, if the line has been changed from the previous fetch then you fetch the data for each pixel if not you just don't.
+```
+impl Place {
+    pub fn get_lines(&self, lines: Vec<u32>) -> Vec<Base64VecU8> {
+        lines
+            .into_iter()
+            .map(|i| {
+                let line = self.board.get_line(i);
+                line.try_to_vec().unwrap().into()
+            })
+            .collect()
+    }
+
+    pub fn get_line_versions(&self) -> Vec<u32> {
+        self.board.line_versions.clone()
+    }
+}
+```
+This is a smart way to store and fetch data from the interface that may be useful to use in your next play to earn near game.
+
+![line fetch](./line-fetch.gif)
+
+## Transactions
+
+Let's step back into our UI in [app.js](https://github.com/jilt/Near-Dev-how-to/blob/master/frontend/src/App.js) for a moment to be sure we understand how the transactions are managed from the frontend.
+First we need a function to check the account if anything goes wrong and this is it:
+```
+async refreshAllowance() {
+    alert(
+      "You're out of access key allowance. Need sign in again to refresh it"
+    );
+    await this.logOut();
+    await this.requestSignIn();
+  }
+
+```
+Then do you remember the `_queue` and `_pendingPixels` arrays we defined in our constructor? It’s definitely time to use them as the transactions are managed depending on what pixels you have drawn on the board:
+```
+async _sendQueue() {
+    const pixels = this._queue.slice(0, BatchOfPixels);
+    this._queue = this._queue.slice(BatchOfPixels);
+    this._pendingPixels = pixels;
+
+    try {
+      await this._contract.draw(
+        {
+          pixels,
+        },
+        new BN("75000000000000")
+      );
+      this._numFailedTxs = 0;
+    } catch (error) {
+      const msg = error.toString();
+      if (msg.indexOf("does not have enough balance") !== -1) {
+        await this.refreshAllowance();
+        return;
+ }
+      console.log("Failed to send a transaction", error);
+      this._numFailedTxs += 1;
+      if (this._numFailedTxs < 3) {
+        this._queue = this._queue.concat(this._pendingPixels);
+        this._pendingPixels = [];
+      } else {
+        this._pendingPixels = [];
+        this._queue = [];
+      }
+    }
+    try {
+      await Promise.all([this.refreshBoard(true), this.refreshAccountStats()]);
+    } catch (e) {
+      // ignore
+    }
+    this._pendingPixels.forEach((p) => {
+      if (this._pending[p.y][p.x] === p.color) {
+        this._pending[p.y][p.x] = -1;
+      }
+    });
+    this._pendingPixels = [];
+  }
+
+```
+Wait, I was not ready for this bunch of code...
+Yes you are! But let’s look at it carefully, we create a pixels object (vector), we modify our _queue object to fit pixels and we assign its value to the _pendingPixel object into an [async function](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/async_function).
+
+And then what? wWe just draw on a contract object which is called from the near sdk, and the action for draw (a part from the actions that we defined for the user) is defined in the [lib.rs](https://github.com/jilt/Near-Dev-how-to/blob/master/contract-rs/pixel-board/src/lib.rs) rust file.
+```
+pub fn draw(&mut self, pixels: Vec<SetPixelRequest>) {
+        if pixels.is_empty() {
+            return;
+        }
+        let mut account = self.get_mut_account(env::predecessor_account_id());
+        let new_pixels = pixels.len() as u32;
+        if ms_time() < self.get_free_drawing_timestamp() {
+            let cost = account.charge(Berry::Avocado, new_pixels);
+            self.burned_balances[Berry::Avocado as usize] += cost;
+        }
+    let mut old_owners = self.board.set_pixels(account.account_index, &pixels);
+        let replaced_pixels = old_owners.remove(&account.account_index).unwrap_or(0);
+        account.num_pixels += new_pixels - replaced_pixels;
+        self.save_account(account);
+
+        for (account_index, num_pixels) in old_owners {
+            let mut account = self.get_internal_account_by_index(account_index).unwrap();
+            self.touch(&mut account);
+            account.num_pixels -= num_pixels;
+            self.save_account(account);
+        }
+
+        self.maybe_send_reward();
+    }
+
+```
+For the smart contract pixels are a colour and an account id (the mystical *Owner*), and it’s a real estate based game: so we have an old owner that drew the pixel before and a new owner that wants to draw it now.
+With the *draw* action we get the `old_owner` and replace it with the new owner account changing the colour value of all pixels inside the `PixelRequest` vector, then we send rewards to the old owner while charging the new one.
+Timestamps for rewards are reset and the count starts again from zero with one pixel less for the old owner and one more for the new one.
+The `setPixelRequest` action is defined in the [board.rs](https://github.com/jilt/Near-Dev-how-to/blob/master/contract-rs/pixel-board/src/board.rs) file of our contract, but let's get back to our [libs.rs](https://github.com/jilt/Near-Dev-how-to/blob/master/contract-rs/pixel-board/src/lib.rs).
+
+What does the maybe_send_rewards() function look like?
+Here it is in all its glory:
+```
+impl Place {
+    fn maybe_send_reward(&mut self) {
+        let current_time = env::block_timestamp();
+        let next_reward_timestamp: u64 = self.get_next_reward_timestamp().into();
+        if next_reward_timestamp > current_time {
+            return;
+        }
+        self.last_reward_timestamp = current_time;
+        let reward: Balance = self.get_expected_reward().into();
+        env::log(format!("Distributed reward of {}", reward).as_bytes());
+        Promise::new(format!(
+            "{}.{}",
+            FARM_CONTRACT_ID_PREFIX,
+            env::current_account_id()
+        ))
+        .function_call(
+            b"take_my_near".to_vec(),
+            b"{}".to_vec(),
+            reward,
+            GAS_BASE_COMPUTE,
+        );
+    }
+}
+```
+Please don't get lazy, if you can't help yourself you can come to this later with [this video by the author of the game](https://www.youtube.com/watch?v=H3QvYHjunwc&t=62s). The explanations I’m gonna use are taken from that video too!
+
+The function verifies the time on the blockchain (we're not using the timer on the interface here, because we wanna be sure!) and uses the farming capabilities of the contract on a global timestamp with the function `get_next_reward_timestamp()` and `last_reward_timestamp()` then finally calls `get_expected_reward()` to calculate the rewards owed to the account.
+```
+    pub fn get_expected_reward(&self) -> U128 {
+        let account_balance = env::account_balance();
+        let storage_usage = env::storage_usage();
+        let locked_for_storage = Balance::from(storage_usage) * STORAGE_PRICE_PER_BYTE + SAFETY_BAR;
+        if account_balance <= locked_for_storage {
+            return 0.into();
+        }
+        let liquid_balance = account_balance - locked_for_storage;
+        let reward = liquid_balance / PORTION_OF_REWARDS;
+        reward.into()
+    }
+```
+So we take the current balance from the berryclub account (remember we have a balance field on the account?), the current storage usage and costs and a safety threshold of 50 avocado.
+If balance is safe for usage outside storage cost we divide it in 24 (hours) * 60 (minutes) portion of reward, which means you basically get exactly the same balance that you have once if you call it every minute, you can find it defined at the start of the [lib.rs file](https://github.com/jilt/Near-Dev-how-to/blob/master/contract-rs/pixel-board/src/lib.rs):
+```
+const PORTION_OF_REWARDS: Balance = 24 * 60;
+const SAFETY_BAR: Balance = 50_000000_000000_000000_000000;
+```
+I bet you guys think the reward process it’s over.
+Wrong.
+
+We actually need to step back into our `maybe_send_reward()` function to see that it calls the new berryclub farm contract to distribute the staking rewards, which are... cucumbers, the staking token on berryclub :)
+```
+const FARM_CONTRACT_ID_PREFIX: &str = "farm";
+```
+That’s actually not the only source of distribute earning with this function, it also levearages the gas costs paid by people to buy avocados and to swap bananas in order to reward the whole community!
+
+How is this possible?
+First things first, the `GAS_BASE_COMPUTE` is defined in the [token.rs file](https://github.com/jilt/Near-Dev-how-to/blob/master/contract-rs/pixel-board/src/token.rs) where the amount of gas for the smart contract is set.
+Yes you’re right! The gas price is low on near and it can be used to reward users that interact with your videogame!!!
+
+To better understand how GAS fees work on Near please refer to [this detailed documentation](https://docs.near.org/docs/concepts/gas)!
+
+This tutorial is brought to you by jilt.near and her [NFT Gaming project](https://www.varda.vision/), please consider supporting us by buying one of our NFTs!
