@@ -154,6 +154,18 @@ h2 {
 .pixel-board {
   @include block;
   border: 1px solid #ddd;
+  &.watch-mode {
+    transition: 3s;
+    position: fixed;
+    width: calc(min(100vh, 100vw));
+    max-width: 100%;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    border: 1px solid #000;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
 }
 
 
@@ -267,4 +279,15 @@ Layout For Tablet / Phone
 
 .root-modal {
 
+}
+.free-drawing {
+  font-size: 1.5em;
+  margin-bottom: 0.5em;
+  &.free {
+    color: #ffff00;
+    background: #000;
+  }
+  &.wait {
+    color: #999999;
+  }
 }

@@ -8,6 +8,10 @@ pub(crate) fn assert_one_yocto() {
     )
 }
 
+pub(crate) fn ms_time() -> u64 {
+    env::block_timestamp() / 1_000_000
+}
+
 pub(crate) fn assert_self() {
     assert_eq!(
         env::predecessor_account_id(),
